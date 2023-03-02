@@ -1,0 +1,776 @@
+﻿using Microsoft.SharePoint;
+using Microsoft.SharePoint.Client;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading.Tasks;
+using KnowHubMigration.Infrastructure;
+using KnowHubMigration.Infrastructure.Logging;
+using System.Collections.Specialized;
+using System.Windows.Forms;
+using System.ComponentModel;
+using System.Data;
+using System.IO;
+using System.IO.Compression;
+
+namespace SourceSP2013
+
+{
+    /// <summary>
+    /// This class fetch 2010 or 2013 documents and create a document to 2013 environment
+    /// </summary>
+    public class SP2013
+    
+    {
+        public static string destLibrary = "";
+        public static string destURL = "";
+        ///summary
+        //method to fetch sharepoint 2013 repository items
+        /// <summary>
+        /// This method represents fetch 2010 or 2013 documents 
+        /// </summary>
+        /// <param name="o2013Migration">This represents a property for migration</param>
+        /// <param name="backgroundWorker">This represents a background worker process</param>
+        /// <param name="total2013">total number of background worker</param>
+        /// <param name="e">this represents a event </param>
+        public static void FetchSP2013Items(SPMigration o2013Migration, ref System.ComponentModel.BackgroundWorker backgroundWorker, 
+                int total2013, DoWorkEventArgs e)
+        {
+            ILogger _logger = new Log4NetAdapter(); //logger class intialize
+            DataTable doctable;
+            List<MigrationEntity> fetchForDocItems;
+            ListItemCollection itemcollection2013;
+            List<MigrationEntity> docCollection = new List<MigrationEntity>();
+            destLibrary = o2013Migration.StrdestLibrary;
+            destURL =  o2013Migration.StrDestURL;
+            int modcount = (o2013Migration.IntFinalID - o2013Migration.IntInitialID) % o2013Migration.IntPageSize;
+
+            int itemscount = (o2013Migration.IntFinalID - o2013Migration.IntInitialID) / o2013Migration.IntPageSize;
+            try
+            {
+                using (ClientContext clientContext2013 = new ClientContext(o2013Migration.StrSourceURL))//connecting to source url via client context
+                {
+                    _logger.info("Intialize Connection");
+                    Console.WriteLine("Connecting Sorce URL");
+                    System.Net.NetworkCredential credentials = new System.Net.NetworkCredential(ConfigHelper.UserName, ConfigHelper.Password);//pass client context credentials
+                    clientContext2013.Credentials = credentials;
+                    _logger.info("Credentials Passing to client Object");
+                    List list = clientContext2013.Web.Lists.GetByTitle(o2013Migration.StrSourceLib);
+                    CamlQuery caml = new CamlQuery();
+                    int intPageSize = 0;
+                   
+                    string strLeft = "<View Scope='RecursiveAll'><Query><Where><And><Geq><FieldRef Name='ID' /><Value Type='Number'>{0}</Value></Geq><Lt>";
+                    string strRight = "<FieldRef Name='ID'/><Value Type='Number'>{1}</Value></Lt></And></Where></Query></View>";
+                    string strFinal = strLeft + strRight;
+                    int itemCount = 0;
+                    if (itemscount > 0)
+                    {
+                        _logger.info("Item Count:" + itemscount);
+                        for (int itemid = 1; itemid <= itemscount; itemid++)
+                        {
+                            itemCount = 0;
+                            _logger.info("Start ID:" + o2013Migration.IntInitialID);
+
+                            o2013Migration.IntFinalID = o2013Migration.IntInitialID + o2013Migration.IntPageSize;
+                            _logger.info("EndId:" + o2013Migration.IntFinalID);
+
+                            caml.ViewXml = string.Format(strFinal, o2013Migration.IntInitialID, o2013Migration.IntFinalID);
+                            try
+                            {
+                                itemcollection2013 = list.GetItems(caml);//getting list items collections
+                                clientContext2013.Load(itemcollection2013);
+                                _logger.info("query excecuting..");
+                                clientContext2013.ExecuteQuery();
+                                itemCount = itemcollection2013.Count;
+                                _logger.info("itemsCount:" + itemCount);
+                                intPageSize = intPageSize + o2013Migration.IntPageSize;
+                                if (itemCount > 0)
+                                {
+                                    _logger.info("itemCount > 0");
+                                    fetchForDocItems = new List<MigrationEntity>();
+                                    fetchForDocItems = Get2013Items(itemcollection2013, clientContext2013);
+                                    if(fetchForDocItems.Count > 0)
+                                    {
+                                        docCollection.AddRange(fetchForDocItems);
+                                    }
+                                    
+                                    backgroundWorker.ReportProgress(intPageSize, total2013);
+                                    //if cancellation is pending, cancel work.  
+                                    if (backgroundWorker.CancellationPending)
+                                    {
+                                        e.Cancel = true;
+                                        return;
+
+
+                                    }
+                                }
+                                o2013Migration.IntInitialID = o2013Migration.IntInitialID + o2013Migration.IntPageSize;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.error("Error: FetchSP2013Items in for loop : " + ex.Message);
+                                //MigrationEntity errorTypes = new MigrationEntity();
+                                //errorTypes.Error = ex.ToString();
+                                //errorTypes.MailTrigger = "No";
+                                //CommonFunctions.UpdateExcetion(errorTypes);
+                            }
+                            //execute client context
+                            
+                           
+                        }
+                        if (modcount > 0)
+                        {
+                            itemCount = 0;
+                            _logger.info("Start ID:" + o2013Migration.IntInitialID);
+                            o2013Migration.IntFinalID = o2013Migration.IntFinalID + modcount;
+                            _logger.info("End ID:" +o2013Migration.IntFinalID);
+                            caml.ViewXml = string.Format(strFinal, o2013Migration.IntInitialID, o2013Migration.IntFinalID);
+                            itemcollection2013 = list.GetItems(caml);//getting list items collections
+                            clientContext2013.Load(itemcollection2013);
+                            _logger.info("query excecuting..");
+                            clientContext2013.ExecuteQuery();//execute client context
+                            itemCount = itemcollection2013.Count;
+                            _logger.info("itemCount:" + itemCount);
+                            intPageSize = intPageSize + modcount;                            
+                            if (itemCount > 0)
+                            {
+                                fetchForDocItems = new List<MigrationEntity>();
+                                fetchForDocItems = Get2013Items(itemcollection2013, clientContext2013);
+                            }
+                            backgroundWorker.ReportProgress(intPageSize, total2013);
+                            if (backgroundWorker.CancellationPending)
+                            {
+                                e.Cancel = true;
+                                return;
+                            }
+                           
+                        }
+
+                    }
+
+                 
+                   //CommonFunctions.convertCsvMigration(docCollection, ConfigHelper.LogwriterPath);
+                
+                }
+            }
+            catch (Exception exerormesage)
+            {
+
+                //_logger.error ("Error: FetchSP2013Items : " + exerormesage.Message);
+                //MigrationEntity errorTypes = new MigrationEntity();
+                //errorTypes.Error = exerormesage.ToString();
+                //errorTypes.MailTrigger = "Yes";
+                //CommonFunctions.UpdateExcetion(errorTypes);
+                throw exerormesage;
+            }
+
+        }
+
+        public static void FetchSP2013ZipItems(SPMigration o2013Migration)
+        {
+            ILogger _logger = new Log4NetAdapter(); //logger class intialize
+            DataTable doctable;
+            List<MigrationEntity> fetchForDocItems;
+            ListItemCollection itemcollection2013;
+            List<MigrationEntity> docCollection = new List<MigrationEntity>();
+            destLibrary = o2013Migration.StrdestLibrary;
+            destURL = o2013Migration.StrDestURL;
+
+            using (ClientContext clientContext2013 = new ClientContext(o2013Migration.StrSourceURL))//connecting to source url via client context
+            {
+                _logger.warn(ConfigHelper.BuName);
+                _logger.info("Intialize Connection");
+                Console.WriteLine("Connecting Sorce URL");
+                System.Net.NetworkCredential credentials = new System.Net.NetworkCredential(ConfigHelper.UserName, ConfigHelper.Password);//pass client context credentials
+                clientContext2013.Credentials = credentials;
+                _logger.info("Credentials Passing to client Object");
+                List list = clientContext2013.Web.Lists.GetByTitle(o2013Migration.StrSourceLib);
+                CamlQuery caml = new CamlQuery();
+                int intPageSize = 0;
+                foreach (string fileType in ConfigHelper.FileTypeCheckQuery)
+                {
+                string strLeft = "<View Scope='RecursiveAll'><Query><Where><And><Eq><FieldRef Name='File_x0020_Type' /><Value Type='text'>" + fileType + "</Value></Eq><Geq><FieldRef Name='ID' /><Value Type='Counter'>" + o2013Migration.IntInitialID+ "</Value></Geq></And></Where><OrderBy><FieldRef Name='ID' Ascending='True' /></OrderBy></Query></View>";
+                string strFinal = strLeft;
+                int itemCount = 0;
+                caml.ViewXml = strLeft;
+                itemcollection2013 = list.GetItems(caml);//getting list items collections
+                clientContext2013.Load(itemcollection2013);
+                _logger.info("query excecuting..");
+                clientContext2013.ExecuteQuery();
+                itemCount = itemcollection2013.Count;
+                _logger.info("itemsCount:" + itemCount);
+                if (itemCount > 0)
+                {
+                    _logger.info("itemCount > 0");
+                    fetchForDocItems = new List<MigrationEntity>();
+                    fetchForDocItems = Get2013Items(itemcollection2013, clientContext2013);
+                  
+                }
+                }
+                
+               // CommonFunctions.convertCsvMigration(docCollection, ConfigHelper.LogwriterPath);
+            }          
+             
+        }
+
+       
+        /// <summary>
+        /// This method used to get final item id from 2010 or 2013 environment
+        /// </summary>
+        /// <param name="strLibraryURL2013">This represents as source url 2010 or 2013</param>
+        /// <param name="sourceLibraryName2013">This represents as document library name</param>
+        /// <returns></returns>
+        public static int getLastitemID(string strLibraryURL2013, string sourceLibraryName2013)
+        {
+            ILogger _logger = new Log4NetAdapter();
+            int lastItemId = 0;//logger class intialize
+            try
+            {
+                using (ClientContext clientContext = new ClientContext(strLibraryURL2013))//connecting to source url via client context
+                {
+                    _logger.info("Intialize Connection");
+                    Console.WriteLine("Connecting Sorce URL");
+                    System.Net.NetworkCredential cred = new System.Net.NetworkCredential(ConfigHelper.UserName, ConfigHelper.Password,"cts");//pass client context credentials
+                    clientContext.Credentials = cred;
+                    _logger.info("Credentials Passing to client Object");
+                    List list = clientContext.Web.Lists.GetByTitle(sourceLibraryName2013);//get list or repository by name
+                    _logger.info("Gettng List");
+                    CamlQuery caml = new CamlQuery();//CreateAllItemsQuery();//intialize caml query
+                    caml.ViewXml = @"<View Scope='RecursiveAll'><Query><Where><Eq><FieldRef Name='FSObjType' /><Value Type='int'>0</Value></Eq></Where><OrderBy><FieldRef Name='ID' Ascending='False' /></OrderBy></Query><ViewFields><FieldRef Name='ID' /></ViewFields><RowLimit>1</RowLimit></View>";
+                    _logger.info("Caml Query Fetching all items");
+                    ListItemCollection itemcollection = list.GetItems(caml);//getting list items collections
+                    clientContext.Load(itemcollection);
+                    _logger.info("query excecuting..");
+                    clientContext.ExecuteQuery();//execute client context
+                    int itemCount = itemcollection.Count;
+
+                    foreach (ListItem listitems in itemcollection)
+                    {
+                        lastItemId = listitems.Id;
+
+                    }
+
+                    _logger.info("Item Count :  " + itemCount);
+                }
+
+            }
+            catch (Exception er)
+            {
+               ///throw er;
+            }
+
+            return lastItemId;
+        }
+
+        /// <summary>
+        /// This method returns the collection of list items
+        /// </summary>
+        /// <param name="itemcollection">this represents as a item collection for to insert file items</param>
+        /// <param name="clientContext">this represents a client context for fetch items </param>
+        /// <returns></returns>
+        public static List<MigrationEntity> Get2013Items(ListItemCollection itemcollection, ClientContext clientContext)
+        {
+            ILogger _logger = new Log4NetAdapter(); //logger class intialize
+           List<MigrationEntity> getfileItems = new List<MigrationEntity>();
+            MigrationEntity MigrationDetails;
+            bool IsMigratedFile = false;
+            long filesize = 0;
+            var fileName2013 = string.Empty;
+            string fileURL = string.Empty;
+            bool filetype2013 = false;
+            bool maxfilesize2013 = false;
+            string fileRefUrl = string.Empty;
+            string listDirextoryUrl2013 = string.Empty;
+            string devurl = string.Empty;
+            string Docurl = string.Empty;
+            FileInformation fileInformation = null;
+            MemoryStream FilememoryStream = null;
+            string fileRef = string.Empty;
+
+            try
+            {
+                _logger.info("Intialize Connection");
+                Console.WriteLine("Connecting Sorce URL");
+                _logger.info("Credentials Passing to client Object");
+                int itemRows2013 = itemcollection.Count;
+                if (itemRows2013 > 0)
+                {
+                    _logger.info("Item RowCount : > 0  " + itemRows2013);
+
+                    foreach (ListItem listItem in itemcollection) //iterating list collection items 
+                    {
+                        MigrationDetails = new MigrationEntity();
+                        fileProp fileProperties = new fileProp();
+                        try
+                        {
+                            _logger.info("Looping Items : > 0  " + listItem.Id);
+                            
+                             MigrationDetails.SourceDocFileID = listItem.Id;
+                            clientContext.Load(listItem.ContentType);
+                            clientContext.ExecuteQuery();
+                            _logger.info("Exequte Query  " + listItem.Id);
+                            filesize = 0;
+                            fileName2013 = string.Empty;
+                            if (listItem.ContentType.Name.Equals("Folder"))
+                            {
+
+                                fileURL = listItem[ConfigHelper.SourceColName].ToString();
+                                fileURL = fileURL.Replace(ConfigHelper.SourceRepositoryUrl, "").TrimStart('/'); ;
+                                fileURL = ConfigHelper.DestiantionFolderUrl +"/"+fileURL;
+                               
+                                CreateFolder(fileURL);
+                            }
+
+                            //Checking Item Content Type
+                            if (listItem.ContentType.Name != "Folder") // check content type not equals to folder
+                            {
+                                _logger.info("Item Type : Document is True " + listItem.Id);
+                               
+                                clientContext.Load(listItem, item => item.File, item => item.File.ListItemAllFields[ConfigHelper.FileSizeColumn]);
+                                clientContext.ExecuteQuery();
+                                _logger.info("File Fetced == True" + listItem.Id);
+                                filesize = long.Parse((string)listItem.File.ListItemAllFields[ConfigHelper.FileSizeColumn]);
+                                //listItem.File.TimeLastModified
+                                fileName2013 = listItem.File.Name;
+                                MigrationDetails.SourceDocFileName = listItem.File.Name;
+                                filetype2013 = CommonFunctions.filetypeAllowed(fileName2013);
+                                maxfilesize2013 = CommonFunctions.fileSizeAllowed(filesize);
+                                MigrationDetails.SourceDocFilePath = listItem.File.ServerRelativeUrl;
+
+                                if (maxfilesize2013 == true && filetype2013 == true)
+                                {
+                                    _logger.info("Filesize==>" + filesize);
+
+                                    fileRefUrl = listItem[ConfigHelper.SourceColName].ToString();
+                                    _logger.info("item URl -->" + fileRefUrl);
+
+                                    listDirextoryUrl2013 = Path.GetDirectoryName(fileRefUrl);
+                                    _logger.info("listDirextoryUrl := " + listDirextoryUrl2013);
+                                    fileRef = listItem.File.ServerRelativeUrl;
+
+                                    _logger.info("Intialize   var fileRef = listItem.File.ServerRelativeUrl;");
+
+                                    devurl = listDirextoryUrl2013.Replace('\\', '/');
+                                    _logger.info("Replace \\ --> /");
+
+                                    //Replace source repository and destination repository for internal refrence
+                                    Docurl = devurl.Replace(ConfigHelper.SourceRepositoryUrl, "");
+                                    _logger.info("Replace source doc url" + ConfigHelper.SourceRepositoryUrl );
+
+                                    #region Zipfile Migration
+                                    if (ConfigHelper.FileCheck.Contains(Path.GetExtension(fileRef)))
+                                    {
+                                        _logger.warn("ZipFolder Name: " + Docurl);
+                                        _logger.warn("Item ID: " + listItem.Id);
+
+                                        fileProperties.Custom_CreatedDate = Convert.ToDateTime(listItem["Created"]);//listItem.File.TimeCreated;
+                                        fileProperties.Custom_ModifiedDate = Convert.ToDateTime(listItem["Modified"]);// 
+
+
+                                        try
+                                        {
+                                            fileInformation = Microsoft.SharePoint.Client.File.OpenBinaryDirect(clientContext, fileRef);
+                                        
+                                        }
+                                        catch (Exception zipex)
+                                        {
+                                            MigrationDetails.Error = "Zip file cannot be open";
+                                            MigrationDetails.IsMigrated = false;
+                                            CommonFunctions.UpdateTable(MigrationDetails);
+                                        }
+                                       
+
+                                        using (ZipArchive archive = new ZipArchive(fileInformation.Stream))
+                                        {
+                                            string fileName="";
+                                            string folderurl="";
+                                            string mainFolder = "";
+                                            //if (Docurl.Length != 0)
+                                            //{
+
+                                            folderurl = Path.GetFileNameWithoutExtension(fileRefUrl);
+                                            folderurl = ConfigHelper.SourceRepositoryUrl + "/" + folderurl;
+
+
+                                            CreateFolder(folderurl);
+                                            foreach (ZipArchiveEntry entry in archive.Entries)
+                                            {
+                                                try
+                                                {
+                                                    MemoryStream fsStream = new MemoryStream();
+                                                    if (entry.Length != 0)
+                                                    {
+                                                        using (Stream zipEntryStream = entry.Open())
+                                                        {
+                                                            //Copy the attachment stream to the zip entry stream
+                                                             zipEntryStream.CopyTo(fsStream);
+                                                             fileName = entry.Name;
+                                                             filetype2013 = CommonFunctions.fileziptypeAllowed(entry.Name);
+                                                             maxfilesize2013 = CommonFunctions.fileSizeAllowed(entry.Length);
+                                                            if (maxfilesize2013 == true && filetype2013 == true)
+                                                            {
+                                                                IsMigratedFile = createFileToDestination(fsStream, folderurl, entry.Name, fileProperties);
+                                                            }
+                                                            else
+                                                            {
+                                                                _logger.warn("FileType or size failed Folderurl: " + entry.FullName);
+                                                                _logger.warn("FileType or size failed: "+entry.Name);
+                                                            }
+                                                        }
+                                                    }
+
+
+                                                }
+
+                                                catch (Exception e)
+                                                {
+  
+                                                    _logger.error("File Creation Error Item ID" + listItem.Id);
+                                                    _logger.error("File Creation Error Inside Zip file name" + entry.FullName);
+                                                    _logger.error("File Creation Error Inside Zip file folder url" + e);
+                                                }
+                                            }
+                                        }
+
+
+                                    }
+                                    #endregion
+
+                                    #region OtherFile Migration
+                                    else
+                                    {
+                                        //split function.
+                                        // _logger.info("Split function UrlSplit  ocurl.Split('-')[1];");
+                                        string folderurl = "";
+                                        try
+                                        {
+
+                                            //DateTime data = Convert.ToDateTime(listItem["Modified"]);
+
+                                            fileProperties.Custom_CreatedDate = Convert.ToDateTime(listItem["Created"]);//listItem.File.TimeCreated;
+                                            fileProperties.Custom_ModifiedDate = Convert.ToDateTime(listItem["Modified"]);// listItem.File.TimeLastModified;
+
+                                            fileInformation = Microsoft.SharePoint.Client.File.OpenBinaryDirect(clientContext, fileRef);
+                                            _logger.info("File info opening file as Binary stream");
+
+                                            _logger.info("fileName: =" + fileName2013);
+                                          
+                                            /* get file stream*/
+                                            #region GetFile as stream
+
+                                            FilememoryStream = new MemoryStream(); // intialize memorystream
+                                            _logger.info("Intialize memory stream:");
+
+                                            fileInformation.Stream.CopyTo(FilememoryStream);//copy to memorystream
+                                            _logger.info("Copying Binary to Stream ::  fileInfo.Stream.CopyTo(memoryStream);");
+                                        }
+                                        catch(Exception exx)
+                                        {
+                                            _logger.error("Source File Error", exx);
+                                            MigrationDetails.IsMigrated = false;
+                                            MigrationDetails.Error = "Source File Error not able to Open files";
+                                            CommonFunctions.UpdateTable(MigrationDetails);
+                                        }
+
+                                        //if urlSplit contains values create a folder method
+                                        _logger.info("Before Condition for URL split UrlSplit != string.Empty)");
+                                        if (Docurl.Length != 0)
+                                        {
+                                            _logger.info("Before Condition for URL split if(UrlSplit != string.Empty)");
+                                            Docurl = Docurl.TrimStart('/');
+                                            //folderurl = Path.GetFileNameWithoutExtension(fileRefUrl);
+                                            folderurl = ConfigHelper.DestiantionFolderUrl + "/" + Docurl;
+                                            _logger.info("Docurl = UrlSplit.TrimStart('/');");
+                                            IsMigratedFile = createFileToDestination(FilememoryStream,folderurl, fileName2013,fileProperties);
+                                            _logger.info("after  creating file and foler successfully created.....");
+                                            MigrationDetails.IsMigrated = IsMigratedFile;
+                                            CommonFunctions.UpdateTable(MigrationDetails);
+
+                                        }
+                                        else
+                                        {
+
+                                            folderurl = ConfigHelper.DestiantionFolderUrl + "/" + Docurl;
+                                            _logger.info("only for Root level Documents");
+                                            //create files root level files.
+                                            IsMigratedFile = createFileToDestination(FilememoryStream, folderurl, fileName2013, fileProperties);
+                                            MigrationDetails.IsMigrated = IsMigratedFile;
+                                            CommonFunctions.UpdateTable(MigrationDetails);
+                                            //_logger.warn("File Created sucessfull" + fileName2013);
+                                        }
+                                      
+
+                                        #endregion
+                                    }
+                                    #endregion
+                                }
+
+                                #region filenot moved default restriction
+                                else
+                                {
+                                    
+                                    MigrationDetails.IsMigrated = false;
+                                    MigrationDetails.Error = "File size or extention";
+                                    CommonFunctions.UpdateTable(MigrationDetails);
+                                    
+                                }
+                                #endregion
+                            }
+
+
+                        }
+                        catch (Exception exceptionmessage)
+                        {
+
+                            MigrationDetails.IsMigrated = false;
+                            MigrationDetails.Error = "File Fetching Error";
+                            CommonFunctions.UpdateTable(MigrationDetails);
+                            
+                        }
+
+                    }
+
+
+                }
+            }
+            catch (Exception exmessage)
+            {
+               
+            }
+
+            return getfileItems;
+        }
+
+        /// <summary>
+        /// this method represents to create file in destination library
+        /// </summary>
+        /// <param name="StreamImage">this represents a stream file upload to document library</param>
+        /// <param name="folderurl">this represents a folder url </param>
+        /// <param name="fileName">this represents a file name to create document library</param>
+        /// <returns></returns>
+        public static bool  createFileToDestination(Stream StreamImage, string folderurl, string fileName,fileProp fileproperties)
+        {
+            //fileProp filedetails = new fileProp();
+           // public static string  createFileToDestination(fileprop filedetails)
+            ILogger _logger = new Log4NetAdapter(); // intialze log 
+            destURL = ConfigHelper.DestURL;
+            destLibrary = ConfigHelper.DestLib;
+            string FilePath=string.Empty;
+            bool IsMigrated=false;
+            _logger.info("Creating file to destination.....");
+            try
+            {     //Get user token
+                //_logger.info("Geting Sp user token before.....");
+              SPUserToken UserToken = userCtoken();// get user token function
+              _logger.info("Geting Sp user token after.....");
+                using (SPSite oSite = new SPSite(destURL, UserToken))//specify  destination url 
+                {
+                   // _logger.info("Connecting Destination Site.....");
+                    using (SPWeb oWeb = oSite.OpenWeb())//opening web 
+                    {
+                        //_logger.info("SPWeb oWeb = oSite.OpenWeb()");
+                        SPList targetList = oWeb.Lists[destLibrary];//specify repository name
+                        //_logger.info("Getng target list.....");
+                        SPFolder folder = targetList.ParentWeb.GetFolder(targetList.RootFolder.Url + "/" + folderurl); // specify folder path 
+                        _logger.info("Getng Folder URl = SPFolder folder = targetList.ParentWeb.GetFolder(targetList.RootFolder.Url + / + folderurl)");
+
+                        if (folder.Exists)  //folder exists or not ..include root level
+                        {
+                            _logger.info("Folder Name already  Created ....." + folder.Name);
+                            _logger.info("Folder Name Path ....." + folder.ServerRelativeUrl);
+                            _logger.info("if (folder.Exists)== True");
+                            SPFile myfile = folder.Files.Add(fileName, StreamImage, true); // files to be added to folder 
+                            _logger.info("file add to folder successfull");
+                            if (myfile.Exists)
+                            {
+                                _logger.info("file Exists == false");
+                                SPListItem lis = myfile.Item; 
+                                lis[ConfigHelper.DestinationColName] = fileName;
+                                lis[ConfigHelper.CusCreatedDate] = fileproperties.Custom_CreatedDate;
+                                lis[ConfigHelper.CusModifiedDate] = fileproperties.Custom_ModifiedDate;
+                                _logger.info("File Created sucessfull" + fileName);
+                                lis.Update(); //update list item
+                                _logger.info("lis.Update();");
+                                if (myfile.CheckOutStatus != SPFile.SPCheckOutStatus.None) // check file status check in or check out
+                                {
+                                    myfile.CheckIn("CheckedIn");
+                                    myfile.Publish("publihsed");
+                                }
+                                FilePath = (string)myfile.Item[SPBuiltInFieldId.EncodedAbsUrl];
+                                _logger.warn("File Created sucessfull" + fileName);
+                            }
+                            IsMigrated = true;
+                        }
+                        else// folder does not exits create new folder
+                        {
+                           _logger.info("Creating folder");
+                            SPFolder DestinationFolder = CreateFolder(folderurl); // function to create new folder and return floder path
+                            _logger.info("After folder creation");
+                            SPFile newFile = DestinationFolder.Files.Add(fileName, StreamImage, true); // add files to folder path
+                           _logger.info("After file Added to Folder");
+                           if (newFile.Exists)
+                            {
+                                _logger.info("After file Added to Folder before created");
+                                SPListItem lis = newFile.Item;
+                                lis[ConfigHelper.DestinationColName] = fileName;
+                                lis[ConfigHelper.CusCreatedDate] = fileproperties.Custom_CreatedDate;
+                                lis[ConfigHelper.CusModifiedDate] = fileproperties.Custom_ModifiedDate;
+                                lis.Update(); // update list item 
+                                _logger.info("After file updated to folder");
+                                if (newFile.CheckOutStatus != SPFile.SPCheckOutStatus.None)// check file status check in or check out
+                                {
+                                    newFile.CheckIn("CheckedIn");
+                                    newFile.Publish("publihsed");
+                                }
+                                FilePath = (string)newFile.Item[SPBuiltInFieldId.EncodedAbsUrl];
+                                _logger.warn("File Created sucessfull" + fileName);
+                                IsMigrated = true;
+                            }
+                        }
+
+
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                _logger.error("Error:::fileCreation function ::->"+ error.Message);
+                IsMigrated = false;
+            }
+            return IsMigrated;
+        }
+
+        //summary
+        //This method is  to  get spuser token from sharepoint to create file by that user account
+
+        /// <summary>
+        /// this method returns spuser token
+        /// </summary>
+        /// <returns>spuser token </returns>
+        public static SPUserToken userCtoken()
+        {
+            ILogger _logger = new Log4NetAdapter();// intialize log 
+            _logger.info("SPUserToken userCtoken() function....");
+            SPUserToken userToken = null;
+           try
+            {
+                Microsoft.SharePoint.SPSecurity.RunWithElevatedPrivileges(delegate() 
+                {
+                    _logger.info("Connecting Site....... RunWithElevatedPrivileges>");
+                    using (SPSite site = new SPSite(destURL))// specify site collection url
+                    {
+                        using (SPWeb web = site.OpenWeb())
+                        {
+                            _logger.info("Passing user ID>");
+                            
+                            userToken = web.AllUsers["i:0#.w|cts\\" + ConfigHelper.UserId].UserToken; // specify User id to get sp token
+                            _logger.info("After user token successfull");
+                        }
+                    }
+
+                });
+               }
+
+            catch (Exception ex)
+            {
+                _logger.error("Sp user token Error ::->" +ex.Message);
+               // throw ex;
+            }
+
+            return userToken;//return user token
+            _logger.info("Spuser Token Return Successfull");
+
+        }
+
+
+        //summary
+       // This method is to create a folder in repository  
+
+        /// <summary>
+        /// this method used to create a folder in document library
+        /// </summary>
+        /// <param name="folderUrl"></param>
+        /// <returns>folder url</returns>
+        public static SPFolder CreateFolder(string folderUrl)
+        {
+            ILogger _logger = new Log4NetAdapter();
+            _logger.info("Folder creation......");
+            SPFolder folder = null;
+            try
+            {
+              _logger.info("Folder SPuser token function......");
+              SPUserToken UserToken = userCtoken();// get usertaken by  userCtoken() function
+              _logger.info("After Folder SPuser token function..........");
+              using (SPSite oSite = new SPSite(destURL, UserToken))//specify user token and destination url
+                {
+                    _logger.info("Folder creation Connecting site..........");
+                    using (SPWeb oWeb = oSite.OpenWeb())
+                    {
+                        _logger.info("Folder creation Target Repository..........");
+                        SPList targetList = oWeb.Lists[destLibrary];//specify destination repository name
+                        if (string.IsNullOrEmpty(folderUrl))
+
+                            return targetList.RootFolder;
+
+                        if (string.IsNullOrEmpty(folderUrl))
+
+                            return targetList.RootFolder;
+
+                        _logger.info("Folder creation targetList.ParentWeb.GetFolder(targetList.RootFolder.Url + / + folderUrl);.........");
+                         folder = targetList.ParentWeb.GetFolder(targetList.RootFolder.Url + "/" + folderUrl);//specify folder path
+                        
+                        if (!folder.Exists)// check if folder alredy exists or not
+                        {
+                            _logger.info("If folder not equal to exits .....");
+                            if (!targetList.EnableFolderCreation)
+                            {
+
+                                targetList.EnableFolderCreation = true;
+
+                                targetList.Update();
+
+                            }
+                            _logger.info("  Split folder URL  string[] folders = folderUrl.Trim('/').Split('/');");
+                            string[] folders = folderUrl.Trim('/').Split('/'); // split folder path 
+                            string folderPath = string.Empty;
+                            for (int i = 0; i < folders.Length; i++) // iterating folder path
+                            {
+                                _logger.info("Folder Path looping ");
+                                folderPath += "/" + folders[i];
+                                folder = targetList.ParentWeb.GetFolder(targetList.RootFolder.Url + folderPath);// get folder path
+                                if (!folder.Exists)//check folder exists or not 
+                                {
+                                    _logger.info("Creating new folder .... ");
+                                    SPListItem newFolder = targetList.Items.Add("", SPFileSystemObjectType.Folder, folderPath.Trim('/'));//add folder to repository
+                                    newFolder.Update(); //update folder
+                                    _logger.info("After Folder created.... ");
+                                    folder = newFolder.Folder;
+                                    _logger.info("After Folder created....Folder Name:-> " + folder.Name);
+                                  
+                                }
+                            }
+
+                        }
+                       
+                    }
+                }
+               
+            }
+                 catch(Exception ex)
+                {
+                    _logger.error("Error in Folder creation...." , ex);//catch error message
+                  
+                    throw ex;
+                }
+            _logger.info("Return Folder path........" + folder.Name);
+            return folder;//return folder path
+           
+        }
+       
+    } 
+    }
+
